@@ -57,3 +57,16 @@ Hello.class            -- application code
 ```
 
 Any modification to `Hello.class` after signing breaks the hash chain, and `jarsigner -verify` fails.
+
+## Inspecting signature files inside the JAR
+
+```bash
+# List all files including signature metadata
+jar tf hello.jar
+
+# Read the manifest (contains SHA hashes of each file)
+unzip -p hello.jar META-INF/MANIFEST.MF
+
+# Read the signature file (signed copy of the manifest)
+unzip -p hello.jar META-INF/MYKEY.SF
+```
