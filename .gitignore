@@ -1,0 +1,4 @@
+*.class
+*.jar
+keystore.jks
+tampered/
