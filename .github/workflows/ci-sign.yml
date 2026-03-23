@@ -1,0 +1,116 @@
+name: Build, Sign JAR and Generate SLSA Provenance
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-sign:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    outputs:
+      jar-digest: ${{ steps.digest.outputs.jar_digest }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Compile Hello.java
+        run: javac Hello.java
+
+      - name: Package into JAR
+        run: jar cfe hello.jar Hello Hello.class
+
+      - name: Generate signing keystore
+        run: |
+          keytool -genkeypair -alias mykey -keyalg RSA \
+            -keysize 2048 -keystore keystore.jks \
+            -storepass changeit \
+            -dname "CN=CI/CD Security Course, O=KSE, L=Kyiv, C=UA" \
+            -validity 365
+
+      - name: Sign the JAR
+        run: |
+          jarsigner -keystore keystore.jks -storepass changeit hello.jar mykey
+          echo "JAR signed successfully"
+
+      - name: Verify JAR signature
+        run: jarsigner -verify -verbose hello.jar
+
+      - name: List signed JAR contents
+        run: jar tf hello.jar
+
+      - name: Tamper detection test
+        run: |
+          mkdir -p tampered
+          cd tampered
+          jar xf ../hello.jar
+          cat > Hello.java << 'JAVA'
+          public class Hello {
+              public static void main(String[] args) {
+                  System.out.println("TAMPERED!");
+              }
+          }
+          JAVA
+          javac Hello.java
+          jar cf ../hello-tampered.jar -C . .
+          cd ..
+          rm -rf tampered
+
+          echo "Verifying tampered JAR (should fail)..."
+          if jarsigner -verify hello-tampered.jar 2>&1; then
+            echo "ERROR: tampered JAR passed verification"
+            exit 1
+          else
+            echo "Tamper detected! Verification failed as expected."
+          fi
+
+      - name: Compute JAR digest
+        id: digest
+        run: |
+          digest=$(sha256sum hello.jar | awk '{print "sha256:"$1}')
+          echo "jar_digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "JAR digest: $digest"
+
+      - name: Generate SLSA provenance for signed JAR
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: hello.jar
+
+      - name: Upload signed JAR
+        uses: actions/upload-artifact@v4
+        with:
+          name: signed-jar
+          path: hello.jar
+
+  verify-provenance:
+    needs: [build-and-sign]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      attestations: read
+    steps:
+      - name: Download signed JAR
+        uses: actions/download-artifact@v4
+        with:
+          name: signed-jar
+
+      - name: Verify JAR signature
+        run: jarsigner -verify -verbose hello.jar
+
+      - name: Verify SLSA provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh attestation verify hello.jar \
+            --repo ${{ github.repository }}
